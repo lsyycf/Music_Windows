@@ -443,7 +443,7 @@ def main():
             load_and_play_song(next_idx, start_pos=0.0, skip_count=skip_count + 1, original_length=original_length, direction=direction)
 
     def load_song_info_only(idx, skip_count=0, original_length=None, direction=None):
-        nonlocal duration, song_playing, current_index
+        nonlocal duration, song_playing, current_index, saved_pos
         if not current_playlist:
             prepare_scrolling_text(
                 "无音乐, 请浏览文件夹", font_large, SCREEN_WIDTH - 40
@@ -451,6 +451,7 @@ def main():
             duration = 0.0
             song_playing = False
             current_index = 0
+            saved_pos = 0.0
             return
         
         if original_length is None:
@@ -463,6 +464,7 @@ def main():
             duration = 0.0
             song_playing = False
             current_index = 0
+            saved_pos = 0.0
             return
         
         current_index = idx % len(current_playlist)
@@ -471,6 +473,7 @@ def main():
         if not os.path.exists(song_path):
             old_index = current_index
             current_playlist.pop(current_index)
+            saved_pos = 0.0
             if not current_playlist:
                 prepare_scrolling_text(
                     "无音乐, 请浏览文件夹", font_large, SCREEN_WIDTH - 40
@@ -502,6 +505,7 @@ def main():
         except (pygame.error, FileNotFoundError):
             old_index = current_index
             current_playlist.pop(current_index)
+            saved_pos = 0.0
             if not current_playlist:
                 prepare_scrolling_text(
                     "无音乐, 请浏览文件夹", font_large, SCREEN_WIDTH - 40
