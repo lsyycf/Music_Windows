@@ -788,13 +788,9 @@ def main():
 
             status_y, status_spacing = 125, 25
             status = (
-                "已暂停"
-                if is_paused and current_playlist
-                else (
-                    "正在播放"
-                    if song_playing
-                    else "已就绪" if current_playlist else "空闲"
-                )
+                "正在播放"
+                if song_playing
+                else "已暂停" if current_playlist else "空闲"
             )
             status_surface = font_small.render(status, True, ACCENT_COLOR)
             screen.blit(
