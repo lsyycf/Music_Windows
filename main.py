@@ -629,9 +629,9 @@ def main():
             root.destroy()
 
             if folder:
-                load_playlist_state(os.path.abspath(folder), process_files=True, auto_play=is_playing_before_browse)
+                load_playlist_state(os.path.abspath(folder), process_files=True, auto_play=False)
             else:
-                load_playlist_state(music_folder, process_files=False, auto_play=is_playing_before_browse)
+                load_playlist_state(music_folder, process_files=False, auto_play=False)
 
         elif action == "reset":
             if music_folder in playlists_data:
