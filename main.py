@@ -300,7 +300,7 @@ def main():
             
         return updated_playlist, updated_index
 
-    def load_playlist_state(folder_path, process_files=True):
+    def load_playlist_state(folder_path, process_files=True, auto_play=False):
         nonlocal music_folder, current_playlist, current_index, saved_pos, active_playlist_mode, duration, is_paused, song_playing
 
         music_folder = folder_path
@@ -347,9 +347,12 @@ def main():
                 "无音乐, 请浏览文件夹", font_large, SCREEN_WIDTH - 40
             )
         else:
-            load_song_info_only(current_index)
-            if saved_pos > 0:
-                is_paused = True
+            if auto_play:
+                load_and_play_song(current_index, start_pos=saved_pos)
+            else:
+                load_song_info_only(current_index)
+                if saved_pos > 0:
+                    is_paused = True
 
     def load_and_play_song(idx, start_pos=0.0, skip_count=0, original_length=None, direction=None):
         nonlocal duration, song_playing, is_paused, current_index, saved_pos
@@ -626,13 +629,9 @@ def main():
             root.destroy()
 
             if folder:
-                load_playlist_state(os.path.abspath(folder), process_files=True)
-                if is_playing_before_browse and current_playlist:
-                    handle_action("play_pause")
+                load_playlist_state(os.path.abspath(folder), process_files=True, auto_play=is_playing_before_browse)
             else:
-                load_playlist_state(music_folder, process_files=False)
-                if is_playing_before_browse and current_playlist:
-                    handle_action("play_pause")
+                load_playlist_state(music_folder, process_files=False, auto_play=is_playing_before_browse)
 
         elif action == "reset":
             if music_folder in playlists_data:
