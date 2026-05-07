@@ -18,7 +18,8 @@ def create_ordered_playlist(files, mode):
     if mode == "random":
         random.shuffle(files_copy)
     else:
-        files_copy.sort(key=lambda f: os.path.basename(f).lower())
+        # sequential and single_loop both use alphabetical sorting (without extension)
+        files_copy.sort(key=lambda f: os.path.splitext(os.path.basename(f))[0].lower())
     return files_copy
 
 

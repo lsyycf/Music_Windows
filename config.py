@@ -3,8 +3,8 @@ import json
 import datetime
 
 APP_DATA_FILE = os.path.join(os.path.expanduser("~"), "settings.json")
-SCREEN_WIDTH = 600
-SCREEN_HEIGHT = 520
+SCREEN_WIDTH = 660
+SCREEN_HEIGHT = 580
 TEXT_COLOR = (230, 230, 240)
 BACKGROUND_COLOR = (18, 18, 28)
 ACCENT_COLOR = (99, 102, 241)
