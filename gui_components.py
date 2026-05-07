@@ -2,6 +2,8 @@ import os
 import pygame
 from tkinter import Tk, Toplevel, Label, Entry, Button as TkButton
 from config import *
+from progress_state import progress_manager
+
 
 
 class Button:
@@ -211,6 +213,77 @@ class MusicProgressBar(Slider):
         )
 
 
+class TaskProgressBar:
+    def __init__(self, rect, font):
+        self.rect = pygame.Rect(rect)
+        self.font = font
+        self.bar_height = 10
+        self.bg_color = (40, 40, 50)
+        self.border_color = (60, 60, 80)
+
+    def draw(self, screen):
+        if not progress_manager.is_active:
+            return
+
+        with progress_manager.lock:
+            current = progress_manager.current
+            total = progress_manager.total
+            desc = progress_manager.desc
+
+        # Calculate ratio
+        ratio = current / total if total > 0 else 0
+        ratio = max(0, min(1, ratio))
+
+        # Draw dimming overlay
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        screen.blit(overlay, (0, 0))
+
+        # Center the progress bar box
+        box_width = self.rect.width
+        box_height = 100 # Slightly taller for better spacing
+        box_rect = pygame.Rect(self.rect.x, self.rect.centery - box_height // 2, box_width, box_height)
+        
+        # Draw background box with subtle shadow/glow
+        for i in range(3, 0, -1):
+            pygame.draw.rect(screen, (20, 20, 30, 100), box_rect.inflate(i*2, i*2), border_radius=12+i)
+        
+        pygame.draw.rect(screen, BUTTON_COLOR, box_rect, border_radius=12)
+        pygame.draw.rect(screen, ACCENT_COLOR, box_rect, 2, border_radius=12)
+
+        # Draw description
+        desc_surf = self.font.render(f"{desc}", True, BUTTON_TEXT_COLOR)
+        screen.blit(desc_surf, (box_rect.x + 25, box_rect.y + 20))
+        
+        # Draw percentage
+        perc_text = f"{int(ratio * 100)}%"
+        perc_surf = self.font.render(perc_text, True, ACCENT_COLOR_LIGHT)
+        screen.blit(perc_surf, (box_rect.right - perc_surf.get_width() - 25, box_rect.y + 20))
+
+        # Draw progress bar background
+        bar_rect = pygame.Rect(box_rect.x + 25, box_rect.y + 60, box_rect.width - 50, self.bar_height)
+        pygame.draw.rect(screen, self.bg_color, bar_rect, border_radius=self.bar_height // 2)
+        
+        # Draw progress bar fill
+        if ratio > 0:
+            fill_width = bar_rect.width * ratio
+            if fill_width > 0:
+                fill_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_width, bar_rect.height)
+                pygame.draw.rect(screen, ACCENT_COLOR, fill_rect, border_radius=self.bar_height // 2)
+                
+                # Subtle highlight on the progress bar
+                highlight_rect = pygame.Rect(bar_rect.x, bar_rect.y, fill_width, bar_rect.height // 2)
+                pygame.draw.rect(screen, (255, 255, 255, 30), highlight_rect, border_radius=self.bar_height // 2)
+        
+        # Draw count info
+        count_text = f"{current} / {total}"
+        count_surf = self.font.render(count_text, True, SECONDARY_TEXT_COLOR)
+        screen.blit(count_surf, (bar_rect.centerx - count_surf.get_width() // 2, bar_rect.bottom + 5))
+
+
+
+
+
 class InputBox:
     def __init__(self, rect, font, initial_text="", placeholder_text="", on_change=None):
         self.rect, self.font, self.placeholder_text = (
@@ -362,6 +435,7 @@ def ask_phone_path():
     x = (dialog.winfo_screenwidth() // 2) - 400
     y = (dialog.winfo_screenheight() // 2) - 80
     dialog.geometry(f"800x160+{x}+{y}")
+    dialog.attributes("-topmost", True)
 
     result = {"path": None}
 
@@ -450,6 +524,7 @@ def ask_rename(initial_name):
     x = (dialog.winfo_screenwidth() // 2) - 400
     y = (dialog.winfo_screenheight() // 2) - 80
     dialog.geometry(f"800x160+{x}+{y}")
+    dialog.attributes("-topmost", True)
 
     result = {"name": None}
 
@@ -539,6 +614,7 @@ def ask_confirm(title, message):
     x = (dialog.winfo_screenwidth() // 2) - 250
     y = (dialog.winfo_screenheight() // 2) - 90
     dialog.geometry(f"500x180+{x}+{y}")
+    dialog.attributes("-topmost", True)
 
     result = {"confirm": False}
 
@@ -622,6 +698,11 @@ class Playlist:
         self.search_query = ""
         self.search_composition = "" # IME 正在输入的未确认文字
         self.search_active = False
+        self.dragging_scroll = False
+        self.name_scroll_x = 0
+        self.name_scroll_delay_start = 0
+        self.last_hover_index = -1
+        self.SCROLL_DELAY_DURATION, self.SCROLL_SPEED = 2000, 40
 
     def _update_filter(self):
         if not self.search_query:
@@ -644,6 +725,22 @@ class Playlist:
             self.scroll_y = max(0, min(max_scroll, target_scroll))
         else:
             self.scroll_y = 0
+
+    def update(self, dt):
+        if not self.visible:
+            return
+
+        if self.hover_index != -1:
+            if self.hover_index != self.last_hover_index:
+                self.name_scroll_x = 0
+                self.name_scroll_delay_start = pygame.time.get_ticks()
+            else:
+                if pygame.time.get_ticks() - self.name_scroll_delay_start > self.SCROLL_DELAY_DURATION:
+                    self.name_scroll_x += self.SCROLL_SPEED * dt
+        else:
+            self.name_scroll_x = 0
+
+        self.last_hover_index = self.hover_index
 
     def draw(self, screen):
         if not self.visible:
@@ -720,9 +817,32 @@ class Playlist:
                 # 绘制文件名
                 filename = os.path.basename(item)
                 name_without_ext = os.path.splitext(filename)[0]
-                text_surface = self.small_font.render(f"{orig_idx+1}. {name_without_ext}", True, color)
-                text_rect = text_surface.get_rect(midleft=(item_rect.x + 15, item_rect.centery))
-                screen.blit(text_surface, text_rect)
+
+                # 歌名滚动逻辑
+                text_max_w = item_rect.width - (100 if i == self.hover_index else 30)
+                full_text_w = self.small_font.size(name_without_ext)[0]
+
+                if i == self.hover_index and full_text_w > text_max_w:
+                    # 如果悬停且文字过长，则滚动
+                    temp_scroll_x = self.name_scroll_x % (full_text_w + 60)
+                    text_surface = self.small_font.render(name_without_ext + " " * 10 + name_without_ext, True, color)
+                    # 使用裁剪区域
+                    item_clip_rect = pygame.Rect(item_rect.x + 15, item_rect.y, text_max_w, item_rect.height)
+                    old_item_clip = screen.get_clip()
+                    screen.set_clip(item_clip_rect.clip(list_area_rect))
+                    screen.blit(text_surface, (item_clip_rect.x - temp_scroll_x, item_rect.centery - text_surface.get_height() // 2))
+                    screen.set_clip(old_item_clip)
+                else:
+                    text_surface = self.small_font.render(name_without_ext, True, color)
+                    text_rect = text_surface.get_rect(midleft=(item_rect.x + 15, item_rect.centery))
+                    # 如果不悬停但也过长，截断显示
+                    if full_text_w > text_max_w:
+                        old_item_clip = screen.get_clip()
+                        screen.set_clip(pygame.Rect(item_rect.x + 15, item_rect.y, text_max_w, item_rect.height).clip(list_area_rect))
+                        screen.blit(text_surface, text_rect)
+                        screen.set_clip(old_item_clip)
+                    else:
+                        screen.blit(text_surface, text_rect)
 
                 # 如果悬停，显示删除和重命名图标
                 if i == self.hover_index:
@@ -778,7 +898,15 @@ class Playlist:
                 return True
 
             if event.button == 1: # 左键点击
+                # 检查是否点击滚动条
                 list_area_rect = pygame.Rect(self.rect.x + 10, self.rect.y + 60, self.rect.width - 20, self.rect.height - 80)
+                scroll_bar_area = pygame.Rect(self.rect.right - 20, list_area_rect.y, 20, list_area_rect.height)
+
+                if scroll_bar_area.collidepoint(event.pos):
+                    self.dragging_scroll = True
+                    self._handle_scroll_drag(event.pos[1])
+                    return True
+
                 if list_area_rect.collidepoint(event.pos):
                     inner_y = event.pos[1] - list_area_rect.y - 10 + self.scroll_y
                     clicked_i = int(inner_y // self.item_height)
@@ -802,6 +930,9 @@ class Playlist:
                         if self.on_item_click:
                             self.on_item_click(orig_idx)
                         return True
+                
+                # 只要在列表区域内，点击事件就不往下传递，防止点穿
+                return True
             elif event.button == 4: # 滚轮向上
                 self.scroll_y = max(0, self.scroll_y - self.item_height * 3)
                 return True
@@ -809,6 +940,15 @@ class Playlist:
                 list_area_rect = pygame.Rect(self.rect.x + 10, self.rect.y + 60, self.rect.width - 20, self.rect.height - 80)
                 max_scroll = max(0, len(self.filtered_items) * self.item_height - list_area_rect.height + 20)
                 self.scroll_y = min(max_scroll, self.scroll_y + self.item_height * 3)
+                return True
+            
+            # 其他鼠标按键（如右键）在区域内也拦截
+            return True
+
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                self.dragging_scroll = False
+            if self.rect.collidepoint(event.pos):
                 return True
 
         elif event.type == pygame.KEYDOWN:
@@ -849,6 +989,10 @@ class Playlist:
             return True
 
         elif event.type == pygame.MOUSEMOTION:
+            if self.dragging_scroll:
+                self._handle_scroll_drag(event.pos[1])
+                return True
+
             if self.rect.collidepoint(event.pos):
                 list_area_rect = pygame.Rect(self.rect.x + 10, self.rect.y + 60, self.rect.width - 20, self.rect.height - 80)
                 if list_area_rect.collidepoint(event.pos):
@@ -880,4 +1024,20 @@ class Playlist:
             return True
 
         return False
+
+    def _handle_scroll_drag(self, mouse_y):
+        list_area_rect = pygame.Rect(self.rect.x + 10, self.rect.y + 60, self.rect.width - 20, self.rect.height - 80)
+        total_content_h = len(self.filtered_items) * self.item_height
+        if total_content_h <= list_area_rect.height:
+            self.scroll_y = 0
+            return
+
+        # 计算滚动比例
+        # 考虑到绘制时的 10px 边距
+        relative_y = mouse_y - (list_area_rect.y + 10)
+        scroll_track_h = list_area_rect.height - 20
+        ratio = max(0, min(1, relative_y / scroll_track_h))
+
+        max_scroll = total_content_h - list_area_rect.height + 20
+        self.scroll_y = ratio * max_scroll
 

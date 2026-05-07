@@ -5,13 +5,12 @@ import subprocess
 import pygame
 import threading
 from tkinter import Tk, filedialog
-
+from tkinter import messagebox
 from config import *
 from gui_components import *
 from phone_sync import *
 from music_utils import *
 from init import process_music_folder_three_steps
-import os
 
 # 强制 SDL 使用系统原生的输入法界面 (修复 Windows 下输入法候选框不显示的问题)
 os.environ["SDL_IME_SHOW_UI"] = "1"
@@ -156,8 +155,8 @@ def main():
     action_btn_w = 62
     spacing = 8
 
-    # Grid calculation
-    settings_x_start = (SCREEN_WIDTH - (label_w + input_w + 2 * action_btn_w + 3 * spacing)) // 2
+    # Grid calculation - Both rows will have 3 action buttons now
+    settings_x_start = (SCREEN_WIDTH - (label_w + input_w + 3 * action_btn_w + 4 * spacing)) // 2
 
     # Row 1: Local Folder
     def on_folder_change(new_path):
@@ -204,8 +203,14 @@ def main():
         placeholder_text="未设置手机同步路径...",
         on_change=on_phone_change
     )
-    sync_phone_button = Button(
+    phone_browse_button = Button(
         pygame.Rect(phone_input_box.rect.right + spacing, sync_y, action_btn_w, 32),
+        "浏览",
+        font_small,
+        is_secondary=True
+    )
+    sync_phone_button = Button(
+        pygame.Rect(phone_browse_button.rect.right + spacing, sync_y, action_btn_w, 32),
         "同步",
         font_small,
         is_secondary=True
@@ -231,6 +236,13 @@ def main():
         font_small
     )
 
+    task_progress_bar = TaskProgressBar(
+        pygame.Rect(80, SCREEN_HEIGHT // 2 - 40, SCREEN_WIDTH - 160, 80),
+        font_medium
+    )
+
+
+
     gui_elements = controls + [
         browse_button,
         mode_button,
@@ -239,6 +251,7 @@ def main():
         reset_playlist_button,
         exit_button,
         mute_button,
+        phone_browse_button,
         sync_phone_button,
         reset_sync_button,
         folder_input_box,
@@ -256,6 +269,9 @@ def main():
     )
     is_syncing = False
     sync_thread = None
+    is_refreshing = False
+    needs_playlist_reload = False
+    was_paused_on_refresh = False
     is_switching_song = False  # 对齐安卓：切歌状态标志，防止状态闪烁和并发冲突
 
     last_save_time = pygame.time.get_ticks()
@@ -533,7 +549,7 @@ def main():
             is_switching_song = True
 
             pygame.mixer.music.load(song_path)
-            duration = pygame.mixer.Sound(song_path).get_length() or 0.0
+            duration = get_music_duration(song_path)
             pygame.mixer.music.play(start=start_pos)
             song_playing, is_paused = True, False
 
@@ -621,7 +637,7 @@ def main():
             return
 
         try:
-            duration = pygame.mixer.Sound(song_path).get_length() or 0.0
+            duration = get_music_duration(song_path)
             song_playing = False
             is_paused = True
             controls[2].text = "播放"
@@ -671,7 +687,7 @@ def main():
             persist_state(immediate_disk=True)
 
     def handle_action(action, **kwargs):
-        nonlocal is_paused, song_playing, current_index, saved_pos, duration, next_new_playlist_mode, active_playlist_mode, music_folder, current_playlist, playlists_data, running, phone_mappings, is_syncing
+        nonlocal is_paused, song_playing, current_index, saved_pos, duration, next_new_playlist_mode, active_playlist_mode, music_folder, current_playlist, playlists_data, running, phone_mappings, is_syncing, is_refreshing, was_paused_on_refresh, needs_playlist_reload
 
         allowed_when_empty = ["browse", "toggle_mode", "exit", "reset", "reset_playlist", "toggle_mute", "sync_phone", "reset_sync", "toggle_playlist"]
         if not current_playlist and action not in allowed_when_empty:
@@ -859,6 +875,8 @@ def main():
                         print(f"Rename failed: {e}")
 
         elif action == "browse":
+            if is_syncing or is_refreshing:
+                return
             is_playing_before_browse = not is_paused
             if music_folder and current_playlist:
                 current_pos_on_save = saved_pos + (
@@ -888,19 +906,34 @@ def main():
                 load_playlist_state(music_folder, force_scan=False, auto_play=is_playing_before_browse)
 
         elif action == "reset":
-            if music_folder:
-                # 刷新：显式执行三步物理处理
-                try:
-                    process_music_folder_three_steps(music_folder)
-                except Exception:
-                    pass
+            if music_folder and not is_refreshing and not is_syncing:
+                is_refreshing = True
+                was_paused_on_refresh = is_paused
 
-                # 逻辑对齐安卓：显式强制扫描
-                load_playlist_state(music_folder, force_scan=True, auto_play=(not is_paused))
-            persist_state(immediate_disk=True)
+                # 锁定 UI
+                sync_phone_button.disabled = True
+                browse_button.disabled = True
+                phone_browse_button.disabled = True
+                mode_button.disabled = True
+                reset_button.text = "刷新中"
+                reset_button.disabled = True
+                reset_playlist_button.disabled = True
+                reset_sync_button.disabled = True
+
+                def refresh_thread_func():
+                    nonlocal is_refreshing, needs_playlist_reload
+                    try:
+                        process_music_folder_three_steps(music_folder)
+                    except Exception:
+                        pass
+                    finally:
+                        needs_playlist_reload = True
+                        is_refreshing = False
+
+                threading.Thread(target=refresh_thread_func, daemon=True).start()
 
         elif action == "reset_playlist":
-            if music_folder:
+            if music_folder and not is_syncing and not is_refreshing:
                 if not ask_confirm("重置确认", "确定要清空当前播放列表并删除该文件夹的缓存吗？"):
                     return
                 old_folder = music_folder
@@ -927,48 +960,74 @@ def main():
         elif action == "toggle_mute":
             set_volume(0.0 if global_volume > 0.01 else 1.0)
 
-        elif action == "sync_phone":
+        elif action == "phone_browse":
             if not music_folder:
                 return
 
-            if is_syncing:
+            if not check_adb_connection():
+                
+                root = Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showinfo("连接失败", "未检测到手机连接！\n\n请检查：\n1. USB 调试是否开启\n2. 手机是否已授权电脑调试\n3. 数据线连接是否稳定")
+                root.destroy()
                 return
 
-            if not check_adb_connection():
+            new_path = ask_phone_path()
+            if new_path:
+                # 浏览完立刻路径替换（转换为 ADB 路径）
+                if not is_adb_path(new_path):
+                    new_path = convert_windows_path_to_adb(new_path)
+
+                phone_mappings[music_folder] = new_path
+                phone_input_box.set_text(new_path)
+                persist_state(immediate_disk=True)
+
+        elif action == "sync_phone":
+            if not music_folder or is_syncing or is_refreshing:
                 return
 
             phone_path = phone_mappings.get(music_folder, "")
             if not phone_path:
-                phone_path = ask_phone_path()
+                # 没路径直接装死
+                return
 
-                if not phone_path:
-                    return
+            if not check_adb_connection():
+                
+                root = Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showinfo("同步失败", "未检测到手机连接！\n\n请检查：\n1. USB 调试是否开启\n2. 手机是否已授权电脑调试\n3. 数据线连接是否稳定")
+                root.destroy()
+                return
 
-                if not is_adb_path(phone_path):
-                    adb_path = convert_windows_path_to_adb(phone_path)
-                    phone_path = adb_path
+            creation_flags = 0x08000000 if sys.platform == 'win32' else 0
+            test_result = subprocess.run(
+                ["adb", "shell", f"ls '{phone_path}'"],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='ignore',
+                timeout=5,
+                creationflags=creation_flags
+            )
 
-                creation_flags = 0x08000000 if sys.platform == 'win32' else 0
-                test_result = subprocess.run(
-                    ["adb", "shell", f"ls '{phone_path}'"],
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    errors='ignore',
-                    timeout=5,
-                    creationflags=creation_flags
-                )
+            if test_result.returncode != 0:
+                
+                root = Tk()
+                root.withdraw()
+                messagebox.showwarning("同步取消", f"手机上找不到该文件夹，请检查路径是否正确：\n{phone_path}")
+                root.destroy()
+                return
 
-                if test_result.returncode != 0:
-                    return
-
-                phone_mappings[music_folder] = phone_path
-                phone_input_box.set_text(phone_path)
+            phone_mappings[music_folder] = phone_path
+            phone_input_box.set_text(phone_path)
 
             is_syncing = True
-            sync_phone_button.text = "同步"
+            sync_phone_button.text = "同步中"
             sync_phone_button.disabled = True
             browse_button.disabled = True
+            phone_browse_button.disabled = True
             mode_button.disabled = True
             reset_button.disabled = True
             reset_playlist_button.disabled = True
@@ -1021,6 +1080,7 @@ def main():
     playlist_ui.on_delete = lambda idx: handle_action("delete_song", index=idx)
     playlist_ui.on_rename = lambda idx: handle_action("rename_song", index=idx)
     mute_button.action = lambda: handle_action("toggle_mute")
+    phone_browse_button.action = lambda: handle_action("phone_browse")
     sync_phone_button.action = lambda: handle_action("sync_phone")
     reset_sync_button.action = lambda: handle_action("reset_sync")
 
@@ -1032,14 +1092,21 @@ def main():
         while running:
             dt = clock.tick(60) / 1000.0
 
-            if not is_syncing and sync_phone_button.disabled:
+            if not is_syncing and not is_refreshing and (sync_phone_button.disabled or reset_button.disabled):
                 sync_phone_button.disabled = False
                 sync_phone_button.text = "同步"
+                reset_button.text = "刷新"
                 browse_button.disabled = False
+                phone_browse_button.disabled = False
                 mode_button.disabled = False
                 reset_button.disabled = False
                 reset_playlist_button.disabled = False
                 reset_sync_button.disabled = False
+
+                if needs_playlist_reload:
+                    load_playlist_state(music_folder, force_scan=True, auto_play=(not was_paused_on_refresh))
+                    persist_state(immediate_disk=True)
+                    needs_playlist_reload = False
 
             if song_playing and not is_switching_song and not pygame.mixer.music.get_busy():
                 handle_action("next_auto")
@@ -1055,6 +1122,7 @@ def main():
             for el in gui_elements:
                 if hasattr(el, 'update'):
                     el.update(dt)
+            playlist_ui.update(dt)
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -1072,17 +1140,18 @@ def main():
             screen.fill(BACKGROUND_COLOR)
 
             # --- Drawing Block 1: Song Info & Progress (Top) ---
+            title_y_center = 85
             if is_scrolling:
                 if pygame.time.get_ticks() - scroll_delay_start > SCROLL_DELAY_DURATION:
                     scroll_x = (scroll_x + scroll_speed * dt) % (scrolling_surface.get_width() / 2)
 
                 # Draw scrolling title with clip
-                title_clip_rect = pygame.Rect(60, 60, SCREEN_WIDTH - 120, 50)
+                title_clip_rect = pygame.Rect(60, title_y_center - 25, SCREEN_WIDTH - 120, 50)
                 screen.blit(
-                    scrolling_surface, (title_clip_rect.x - scroll_x, title_clip_rect.y + 5)
+                    scrolling_surface, (title_clip_rect.x - scroll_x, title_clip_rect.y + (title_clip_rect.height - scrolling_surface.get_height()) // 2)
                 )
             elif scrolling_surface:
-                title_rect = scrolling_surface.get_rect(center=(SCREEN_WIDTH // 2, 85))
+                title_rect = scrolling_surface.get_rect(center=(SCREEN_WIDTH // 2, title_y_center))
                 screen.blit(scrolling_surface, title_rect)
 
             music_progress_bar.draw(screen, current_time, duration)
@@ -1104,19 +1173,17 @@ def main():
 
             # Volume Label and Slider
             vol_label = font_small.render("音量", True, SECONDARY_TEXT_COLOR)
-            vol_x_start = (SCREEN_WIDTH - (60 + 200 + 80 + 2 * 20)) // 2
-            screen.blit(vol_label, (vol_x_start + 10, volume_slider.rect.centery - vol_label.get_height() // 2))
+            # 使用统一的 vol_x_start，并让标签在 vol_label_w (60) 空间内右对齐
+            screen.blit(vol_label, (vol_x_start + 60 - vol_label.get_width(), volume_slider.rect.centery - vol_label.get_height() // 2))
             volume_slider.draw(screen)
 
             # --- Drawing Block 3: File & Sync Settings (Bottom) ---
-            # Labels for settings block - they are grid-aligned
-            settings_x_start = (SCREEN_WIDTH - (88 + 250 + 3 * 62 + 4 * 8)) // 2
-
+            # Labels for settings block - they are right-aligned to their space for better look
             folder_label = font_small.render("本地文件夹", True, SECONDARY_TEXT_COLOR)
-            screen.blit(folder_label, (settings_x_start, folder_input_box.rect.centery - folder_label.get_height() // 2))
+            screen.blit(folder_label, (settings_x_start + 88 - folder_label.get_width(), folder_input_box.rect.centery - folder_label.get_height() // 2))
 
             phone_label = font_small.render("手机路径", True, SECONDARY_TEXT_COLOR)
-            screen.blit(phone_label, (settings_x_start, phone_input_box.rect.centery - phone_label.get_height() // 2))
+            screen.blit(phone_label, (settings_x_start + 88 - phone_label.get_width(), phone_input_box.rect.centery - phone_label.get_height() // 2))
 
             # Draw Inputs and Buttons in Block 3
             folder_input_box.draw(screen)
@@ -1125,6 +1192,7 @@ def main():
             reset_playlist_button.draw(screen)
 
             phone_input_box.draw(screen)
+            phone_browse_button.draw(screen)
             sync_phone_button.draw(screen)
             reset_sync_button.draw(screen)
 
@@ -1133,6 +1201,10 @@ def main():
 
             # Playlist overlay
             playlist_ui.draw(screen)
+
+            # Task progress bar overlay (always on top when active)
+            task_progress_bar.draw(screen)
+
 
             pygame.display.flip()
 

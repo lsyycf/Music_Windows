@@ -1,5 +1,6 @@
 import os
 import random
+from mutagen import File
 from config import SUPPORTED_FORMATS
 
 
@@ -26,3 +27,11 @@ def create_ordered_playlist(files, mode):
 def format_time(s):
     return f"{int(s//60):02d}:{int(s%60):02d}" if s >= 0 else "--:--"
 
+def get_music_duration(file_path):
+    try:
+        audio = File(file_path)
+        if audio and audio.info:
+            return audio.info.length
+    except Exception:
+        pass
+    return 0.0

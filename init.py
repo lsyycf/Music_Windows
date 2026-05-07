@@ -4,6 +4,8 @@ import win32file
 import pywintypes
 from mutagen import File as MutagenFile
 from config import SUPPORTED_FORMATS, get_datetime
+from progress_state import progress_manager
+
 
 def process_music_folder_three_steps(folder_path):
     if not os.path.isdir(folder_path):
@@ -19,8 +21,12 @@ def process_music_folder_three_steps(folder_path):
     target_time = get_datetime()
     win_time = pywintypes.Time(target_time)
 
-    for filename in music_files:
-        file_path = os.path.join(folder_path, filename)
+    progress_manager.start(len(music_files), "正在刷新物理元数据")
+    try:
+        for filename in music_files:
+            file_path = os.path.join(folder_path, filename)
+            progress_manager.update(1)
+
 
         # 步骤 1 & 2：元数据清理与标准化 (合并循环)
         try:
@@ -73,3 +79,6 @@ def process_music_folder_three_steps(folder_path):
         finally:
             if handle:
                 win32file.CloseHandle(handle)
+    finally:
+        progress_manager.finish()
+

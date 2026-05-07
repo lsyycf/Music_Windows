@@ -1,6 +1,8 @@
 import os
 import sys
 import subprocess
+from progress_state import progress_manager
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import SUPPORTED_FORMATS, get_timestr
 from music_utils import validate_and_get_music_files
@@ -14,20 +16,27 @@ MAX_WORKERS = 8
 
 
 def convert_windows_path_to_adb(windows_path):
-    path = windows_path.strip()
+    path = windows_path.strip().strip('"').strip("'")
+    path = path.replace('/', '\\')
     parts = [p.strip() for p in path.split('\\') if p.strip()]
     
-    if parts and parts[0] == '此电脑':
+    pc_names = ('此电脑', 'This PC', 'My Computer')
+    if parts and parts[0] in pc_names:
         parts = parts[1:]
-    
-    if parts:
-        parts = parts[1:]
-    
-    if parts and ('内部共享存储空间' in parts[0] or '内部存储' in parts[0] or 'Internal' in parts[0]):
-        parts = parts[1:]
-        base = '/sdcard'
-    else:
-        base = '/sdcard'
+
+    internal_storage_names = (
+        '内部共享存储空间',
+        '内部存储',
+        'Internal shared storage',
+        'Internal storage',
+        'Internal',
+    )
+    for index, part in enumerate(parts):
+        if any(name in part for name in internal_storage_names):
+            parts = parts[index + 1:]
+            break
+
+    base = '/sdcard'
     
     if parts:
         adb_path = base + '/' + '/'.join(parts)
@@ -144,8 +153,15 @@ def process_phone_music_metadata(phone_path):
                 executor.submit(touch_phone_file, phone_path, filename, time_str): filename
                 for filename in files
             }
-            for future in as_completed(future_to_filename):
-                future.result()
+            # Add progress_manager for metadata scan on phone
+            progress_manager.start(len(files), "正在刷新手机媒体库元数据")
+            try:
+                for future in as_completed(future_to_filename):
+                    future.result()
+                    progress_manager.update(1)
+            finally:
+                progress_manager.finish()
+
         
         result = subprocess.run(
             ["adb", "shell", f"am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file://{phone_path}"],
@@ -177,8 +193,14 @@ def sync_phone_complete(music_folder, phone_path):
                     executor.submit(delete_phone_file, phone_path, filename): filename
                     for filename in to_delete
                 }
-                for future in as_completed(future_to_filename):
-                    future.result()
+                progress_manager.start(len(to_delete), "正在删除手机失效文件")
+                try:
+                    for future in as_completed(future_to_filename):
+                        future.result()
+                        progress_manager.update(1)
+                finally:
+                    progress_manager.finish()
+
         
         if to_upload:
             time_str = get_timestr()
@@ -189,10 +211,16 @@ def sync_phone_complete(music_folder, phone_path):
                     executor.submit(copy_file_to_phone, os.path.join(music_folder, filename), phone_path): filename
                     for filename in to_upload
                 }
-                for future in as_completed(future_to_filename):
-                    filename = future_to_filename[future]
-                    if future.result():
-                        newly_pushed_files.append(filename)
+                progress_manager.start(len(to_upload), "正在上传新歌曲到手机")
+                try:
+                    for future in as_completed(future_to_filename):
+                        filename = future_to_filename[future]
+                        if future.result():
+                            newly_pushed_files.append(filename)
+                        progress_manager.update(1)
+                finally:
+                    progress_manager.finish()
+
             
             if newly_pushed_files:
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -200,12 +228,17 @@ def sync_phone_complete(music_folder, phone_path):
                         executor.submit(touch_phone_file, phone_path, filename, time_str): filename
                         for filename in newly_pushed_files
                     }
-                    for future in as_completed(future_to_filename):
-                        future.result()
+                    progress_manager.start(len(newly_pushed_files), "正在校准手机文件时间")
+                    try:
+                        for future in as_completed(future_to_filename):
+                            future.result()
+                            progress_manager.update(1)
+                    finally:
+                        progress_manager.finish()
+
         
         process_phone_music_metadata(phone_path)
         return True
         
     except Exception:
         return False
-
